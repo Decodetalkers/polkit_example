@@ -1,13 +1,15 @@
 use futures::SinkExt;
-use global::PasswordMessage;
+use iced::Color;
 use iced::Element;
 use iced::Task;
 use iced::widget::button;
+use iced::widget::operation::focus;
 use iced::window::Id;
 use iced::{
     Alignment, Length,
     widget::{Space, column, container, row, text, text_input},
 };
+use iced_layershell::reexport::KeyboardInteractivity;
 use iced_layershell::reexport::OutputOption;
 use iced_layershell::settings::LayerShellSettings;
 use iced_layershell::settings::StartMode;
@@ -17,24 +19,38 @@ use iced_layershell::{
     reexport::NewLayerShellSettings,
     reexport::{Anchor, Layer},
 };
-use mypolkit::MyPolkit;
 
-mod global;
-mod mypolkit;
+use zbus_polkit_agent::{
+    Identity, UnixUser,
+    agent_session::{Message as PolkitMessage, PolkitAgentSession, Response},
+    polkit_agent_instance,
+    server::Error,
+};
 
-use futures::channel::mpsc::Sender;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use futures::channel::mpsc::{self, Receiver, Sender};
+
+static INPUT_ID: LazyLock<iced::widget::Id> = LazyLock::new(iced::widget::Id::unique);
+
+#[derive(Debug, Clone)]
+pub enum PasswordMessage {
+    Password(String),
+    Canceled,
+}
 
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 enum Message {
-    PolkitCome,
+    PolkitPasswordRequest { prompt: String, message: String },
     PolkitComplete,
     PolkitError(String),
     PolkitInfo(String),
     Cancel,
-    Exit,
     Confirm,
     Opened(Id),
+    IcedEvent(iced::Event),
     PolkitPwSender(Sender<PasswordMessage>),
     PasswordChange(String),
 }
@@ -43,23 +59,24 @@ enum Message {
 struct PolkitDialog {
     error_message: String,
     info_message: String,
+    message: String,
+    prompt: String,
     password: String,
     current_id: Option<Id>,
-    #[allow(unused)]
-    controller: glib::MainLoop,
     pw_sender: Option<Sender<PasswordMessage>>,
 }
 
 const DIALOG_NAMESPACE: &str = "osd";
 
 impl PolkitDialog {
-    fn new(controller: glib::MainLoop) -> Self {
+    fn new() -> Self {
         Self {
             error_message: "".to_owned(),
             info_message: "".to_owned(),
+            message: "".to_owned(),
+            prompt: "Your password".to_owned(),
             password: "".to_owned(),
             current_id: None,
-            controller,
             pw_sender: None,
         }
     }
@@ -69,16 +86,19 @@ fn update(dialog: &mut PolkitDialog, message: Message) -> Task<Message> {
     use iced::window::Action as WindowAction;
     use iced_runtime::Action;
     match message {
-        Message::PolkitCome => {
+        Message::PolkitPasswordRequest { prompt, message } => {
             if dialog.current_id.is_some() {
                 return Task::none();
             }
+            dialog.prompt = prompt;
+            dialog.message = message;
             Task::done(Message::NewLayerShell {
                 settings: NewLayerShellSettings {
                     size: None,
                     exclusive_zone: Some(-1),
                     anchor: Anchor::all(),
                     layer: Layer::Top,
+                    keyboard_interactivity: KeyboardInteractivity::Exclusive,
                     output_option: OutputOption::LastOutput,
                     ..Default::default()
                 },
@@ -87,26 +107,28 @@ fn update(dialog: &mut PolkitDialog, message: Message) -> Task<Message> {
         }
         Message::Opened(id) => {
             dialog.current_id = Some(id);
-            Task::none()
-        }
-        Message::Exit => {
-            dialog.controller.quit();
-            iced_runtime::task::effect(Action::Exit)
+            focus(INPUT_ID.clone())
         }
         Message::Confirm => {
             if let Some(pw_sender) = &mut dialog.pw_sender {
-                let _ = pw_sender.try_send(PasswordMessage::Pw(dialog.password.clone()));
+                let _ = pw_sender.try_send(PasswordMessage::Password(dialog.password.clone()));
             }
+
             Task::none()
         }
         Message::PolkitComplete => {
             let id = dialog.current_id.take().unwrap();
+            dialog.password.clear();
             iced_runtime::task::effect(Action::Window(WindowAction::Close(id)))
         }
         Message::Cancel => {
             if let Some(pw_sender) = &mut dialog.pw_sender {
                 let _ = pw_sender.try_send(PasswordMessage::Canceled);
             }
+            if let Some(id) = dialog.current_id.take() {
+                return iced_runtime::task::effect(Action::Window(WindowAction::Close(id)));
+            }
+            dialog.password.clear();
             Task::none()
         }
         Message::PolkitError(err) => {
@@ -126,6 +148,15 @@ fn update(dialog: &mut PolkitDialog, message: Message) -> Task<Message> {
             dialog.pw_sender = Some(sender);
             Task::none()
         }
+        Message::IcedEvent(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key,
+            ..
+        })) => match key {
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => {
+                Task::done(Message::Confirm)
+            }
+            _ => focus(INPUT_ID.clone()),
+        },
         _ => Task::none(),
     }
 }
@@ -133,9 +164,12 @@ fn update(dialog: &mut PolkitDialog, message: Message) -> Task<Message> {
 fn view(dialog: &PolkitDialog, _id: iced::window::Id) -> Element<'_, Message> {
     container(
         column![
-            text_input("Your password", &dialog.password)
+            container(text(&dialog.message).size(25.).color(Color::WHITE)).center_x(Length::Fill),
+            Space::new().height(5),
+            text_input(&dialog.prompt, &dialog.password)
                 .padding(10)
                 .secure(true)
+                .id(INPUT_ID.clone())
                 .on_input(Message::PasswordChange),
             text(&dialog.info_message),
             text(&dialog.error_message).color(iced::color!(0xff0000)),
@@ -143,8 +177,6 @@ fn view(dialog: &PolkitDialog, _id: iced::window::Id) -> Element<'_, Message> {
                 button("Confirm").on_press(Message::Confirm),
                 Space::new().width(30.),
                 button("Cancel").on_press(Message::Cancel),
-                Space::new().width(30.),
-                button("Debug").on_press(Message::Exit)
             ]
         ]
         .align_x(Alignment::Center)
@@ -167,80 +199,134 @@ fn style(_dialog: &PolkitDialog, theme: &iced::Theme) -> iced::theme::Style {
 fn subscription(_dialog: &PolkitDialog) -> iced::Subscription<Message> {
     iced::Subscription::batch(vec![
         iced::window::open_events().map(Message::Opened),
+        iced::event::listen().map(Message::IcedEvent),
         polkit_subscription(),
     ])
 }
 
 fn polkit_subscription() -> iced::Subscription<Message> {
     iced::Subscription::run(|| {
-        iced::stream::channel(
-            100,
-            |sender: futures::channel::mpsc::Sender<Message>| async move {
-                let (sender_pw, receiver_pw) = futures::channel::mpsc::channel(1000);
-                global::init_pw_receiver(receiver_pw);
-                let mut sender2 = sender.clone();
-                global::init_sender(sender);
-                sender2
-                    .send(Message::PolkitPwSender(sender_pw))
-                    .await
-                    .unwrap();
-                global::INIT_STATUS.store(true, std::sync::atomic::Ordering::Relaxed);
-            },
-        )
+        iced::stream::channel(100, |mut sender: Sender<Message>| async move {
+            let (pw_sender, pw_receiver) = mpsc::channel(1000);
+
+            sender
+                .send(Message::PolkitPwSender(pw_sender))
+                .await
+                .unwrap();
+            let _connection = polkit_agent_instance(
+                move || Agent {
+                    pw_receiver,
+                    sender: sender.clone(),
+                },
+                authenticate,
+                cancel_authentication,
+            )
+            .connect(OBJECT_PATH)
+            .await
+            .unwrap();
+            std::future::pending::<()>().await
+        })
     })
 }
 
 const OBJECT_PATH: &str = "/org/waycrate/PolicyKit1/AuthenticationAgent";
 
-fn run_polkit_thread() -> (glib::MainLoop, std::thread::JoinHandle<()>) {
-    use polkit_agent_rs::RegisterFlags;
-    use polkit_agent_rs::gio;
-    use polkit_agent_rs::polkit::UnixSession;
-    use polkit_agent_rs::traits::ListenerExt;
-    let main_loop = glib::MainLoop::new(None, true);
-    let main_loop_control = main_loop.clone();
-    let thread = std::thread::spawn(move || {
-        while !global::INIT_STATUS.load(std::sync::atomic::Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        let my_polkit = MyPolkit::default();
+struct Agent {
+    pw_receiver: Receiver<PasswordMessage>,
+    sender: Sender<Message>,
+}
 
-        let Ok(subject) = UnixSession::new_for_process_sync(
-            nix::unistd::getpid().as_raw(),
-            gio::Cancellable::NONE,
-        ) else {
-            return;
-        };
-        let _register = my_polkit
-            .register(
-                RegisterFlags::NONE,
-                &subject,
-                OBJECT_PATH,
-                gio::Cancellable::NONE,
-            )
-            .unwrap();
-        main_loop.run();
-    });
-    (main_loop_control, thread)
+async fn authenticate(
+    agent: &mut Agent,
+    _action_id: &str,
+    msg: &str,
+    _icon_name: &str,
+    _details: HashMap<&str, &str>,
+    cookie: &str,
+    mut identifiers: Vec<Identity<'_>>,
+) -> Result<(), Error> {
+    let identify: UnixUser = identifiers.remove(0).try_into()?;
+    let mut session = PolkitAgentSession::new(identify, cookie)?;
+    let mut retry_count = 3;
+    while retry_count >= 0 {
+        while !session.is_complete() {
+            let message = session.async_dispatch().await?;
+            match message {
+                PolkitMessage::Error(error) => {
+                    tracing::error!("error: {error}");
+                    let _ = agent.sender.send(Message::PolkitError(error)).await;
+                }
+                PolkitMessage::Info(info) => {
+                    let _ = agent.sender.send(Message::PolkitInfo(info)).await;
+                }
+                PolkitMessage::Request { prompt, .. } => {
+                    let _ = agent
+                        .sender
+                        .send(Message::PolkitPasswordRequest {
+                            prompt,
+                            message: msg.to_owned(),
+                        })
+                        .await;
+                    match agent.pw_receiver.recv().await {
+                        Ok(PasswordMessage::Password(password)) => {
+                            session.response(Response {
+                                password: &password,
+                            })?;
+                        }
+                        Ok(PasswordMessage::Canceled) => {
+                            return Err(Error::Cancelled);
+                        }
+                        Err(e) => {
+                            let _ = agent.sender.send(Message::PolkitComplete).await;
+                            return Err(Error::FailedReason(format!("Time out: {e}")));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if session.succeeded() {
+            let _ = agent.sender.send(Message::PolkitComplete).await;
+            return Ok(());
+        }
+        session.restart()?;
+        retry_count -= 1;
+    }
+    let _ = agent.sender.send(Message::PolkitComplete).await;
+    if !session.succeeded() {
+        return Err(Error::Failed);
+    }
+    Ok(())
+}
+
+async fn cancel_authentication(agent: &mut Agent, _cookie: &str) -> Result<(), Error> {
+    let _ = agent.sender.send(Message::PolkitComplete).await;
+    Ok(())
 }
 
 fn main() -> iced_layershell::Result {
-    let (controller, handle) = run_polkit_thread();
-    daemon(
-        move || PolkitDialog::new(controller.clone()),
-        DIALOG_NAMESPACE,
-        update,
-        view,
-    )
-    .layer_settings(LayerShellSettings {
-        start_mode: StartMode::Background,
-        exclusive_zone: -1,
-        anchor: Anchor::all(),
-        ..Default::default()
-    })
-    .subscription(subscription)
-    .style(style)
-    .run()?;
-    let _ = handle.join();
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::fmt::time::LocalTime;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::filter::EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy()
+                .add_directive("usvg=off".parse().unwrap())
+                .add_directive("wgpu_hal::vulkan=off".parse().unwrap()),
+        )
+        .with_timer(LocalTime::rfc_3339())
+        .init();
+    daemon(PolkitDialog::new, DIALOG_NAMESPACE, update, view)
+        .layer_settings(LayerShellSettings {
+            start_mode: StartMode::Background,
+            exclusive_zone: -1,
+            anchor: Anchor::all(),
+            ..Default::default()
+        })
+        .subscription(subscription)
+        .style(style)
+        .run()?;
     Ok(())
 }
