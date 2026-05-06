@@ -21,7 +21,7 @@ struct Agent {
     sender: Sender<Message>,
 }
 
-async fn authenticate(
+async fn authenticate_inner(
     agent: &mut Agent,
     action_id: &str,
     msg: &str,
@@ -85,7 +85,6 @@ async fn authenticate(
                             session.restart_with_uid(users[index])?;
                         }
                         Err(e) => {
-                            let _ = agent.sender.send(Message::PolkitComplete).await;
                             return Err(Error::FailedReason(format!("Timeout: {e}")));
                         }
                     }
@@ -95,17 +94,38 @@ async fn authenticate(
         }
 
         if session.succeeded() {
-            let _ = agent.sender.send(Message::PolkitComplete).await;
             return Ok(());
         }
         session.restart()?;
         retry_count -= 1;
     }
-    let _ = agent.sender.send(Message::PolkitComplete).await;
     if !session.succeeded() {
         return Err(Error::Failed);
     }
     Ok(())
+}
+
+async fn authenticate(
+    agent: &mut Agent,
+    action_id: &str,
+    msg: &str,
+    icon_name: &str,
+    details: HashMap<&str, &str>,
+    cookie: &str,
+    identifiers: Vec<Identity<'_>>,
+) -> Result<(), Error> {
+    let result = authenticate_inner(
+        agent,
+        action_id,
+        msg,
+        icon_name,
+        details,
+        cookie,
+        identifiers,
+    )
+    .await;
+    let _ = agent.sender.send(Message::PolkitComplete).await;
+    result
 }
 
 async fn cancel_authentication(agent: &mut Agent, _cookie: &str) -> Result<(), Error> {
