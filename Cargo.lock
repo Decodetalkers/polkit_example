@@ -2450,18 +2450,6 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.11.1",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
-
-[[package]]
-name = "nix"
 version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
@@ -3138,7 +3126,7 @@ dependencies = [
  "iced",
  "iced_layershell",
  "iced_runtime",
- "nix 0.30.1",
+ "nix",
  "tracing",
  "tracing-subscriber",
  "xdg",
@@ -5528,7 +5516,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "855c4548c91d9eaa1583fe60bc50ef66439dfa6d9d43aecc113cd37c82bffca6"
 dependencies = [
- "nix 0.31.2",
+ "nix",
  "serde",
  "systemd",
  "thiserror 2.0.18",
