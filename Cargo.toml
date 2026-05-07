@@ -13,14 +13,14 @@ iced = { version = "0.14.0", features = [
 	"canvas",
 	"advanced",
 	"smol",
-	"svg"
+	"svg",
 ] }
 iced_runtime = "0.14.0"
 iced_layershell = "0.18.0"
 futures = "0.3.31"
 
 nix = { version = "0.31.2", features = ["process", "user"] }
-zbus-polkit-agent = "0.4.2"
+zbus-polkit-agent = "0.4.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = [
 	"std",

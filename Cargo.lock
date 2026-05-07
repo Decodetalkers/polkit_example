@@ -5512,10 +5512,11 @@ dependencies = [
 
 [[package]]
 name = "zbus-polkit-agent"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "855c4548c91d9eaa1583fe60bc50ef66439dfa6d9d43aecc113cd37c82bffca6"
+checksum = "952b9a48f63decd9065bb50405c2cfb99ab3b7e244fd2584190d586aa173be34"
 dependencies = [
+ "libsystemd-sys",
  "nix",
  "serde",
  "systemd",
