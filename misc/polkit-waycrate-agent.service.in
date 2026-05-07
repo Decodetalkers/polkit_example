@@ -1,0 +1,9 @@
+[Unit]
+Description=Waycrate PolicyKit Authentication Agent
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@bin_install_dir@/polkit-waycrate-authentication-agent-1
+Slice=background.slice
+TimeoutStopSec=5sec
+Restart=on-failure
